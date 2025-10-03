@@ -1,61 +1,75 @@
-import asyncio
-from fastapi import FastAPI
+import os
+import shutil
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from src.rag.retrieve_generation import build_graph
 from src.rag.indexing import process_pdf
+from src.rag.retrieve_generation import build_graph
 
-# Initialize the FastAPI app
 app = FastAPI(
     title="RAG with Memory API",
-    description="An API for interacting with a conversational RAG"
+    description="An API for interacting with a conversational RAG agent."
 )
 
-# Build the LangGraph graph once when the server starts
-# This is more efficient than rebuilding it for every request
 graph = build_graph()
+PDF_DATA_DIR = "data"
 
 
-# Pydantic model for the request body to ensure type validation
+@app.post("/process-pdf")
+# --- CHANGE IS HERE ---
+# Renamed 'file' to 'uploaded_file' to avoid name collisions.
+async def process_pdf_endpoint(uploaded_file: UploadFile = File(...)):
+    """
+    Endpoint to upload and process a PDF file.
+    """
+    if not os.path.exists(PDF_DATA_DIR):
+        os.makedirs(PDF_DATA_DIR)
+
+    # --- CHANGE IS HERE ---
+    file_path = os.path.join(PDF_DATA_DIR, uploaded_file.filename)
+
+    try:
+        # Save the uploaded file temporarily
+        with open(file_path, "wb") as buffer:
+            # --- CHANGE IS HERE ---
+            shutil.copyfileobj(uploaded_file.file, buffer)
+
+        process_pdf(file_path)
+
+        return {
+            "status": "success",
+            # --- CHANGE IS HERE ---
+            "filename": uploaded_file.filename,
+            "message": "File processed and indexed successfully."
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"An error occurred: {str(e)}")
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+# --- Chat Endpoint (No changes needed here) ---
+
+
 class ChatRequest(BaseModel):
     message: str
     thread_id: str
 
 
-# Asynchronous generator to stream graph outputs
-async def stream_genarator(graph_stream):
-    """
-    Takes the LangGraph stream and yields the content of the AI messages.
-    """
-
-    # The graph streams dictionaries. We are interested in the final 'generate' step's output.
+async def stream_generator(graph_stream):
     async for step in graph_stream:
-        # The output of a step is a dictionary where the key is the node name
         if "generate" in step:
-            # The value is another dictionary, we access the 'messages'
             generated_messages = step["generate"]["messages"]
             if generated_messages:
-                # The last message in the list is the new AI response
                 ai_message = generated_messages[-1]
                 if ai_message.content:
-                    # Yield the content of the message
                     yield ai_message.content
 
 
 @app.post("/chat")
 async def chat_endpoint(request: ChatRequest):
-    """
-    Endpoint to handle chat interactions. It streams the response back to the client.
-    """
-
-    # Configuration for the graph, including the thread_id for memory
     config = {"configurable": {"thread_id": request.thread_id}}
-
-    # Prepare the input for the graph
     input_data = {"messages": [("user", request.message)]}
-
-    # Get the asynchronous stream from the graph
     graph_stream = graph.astream(input_data, config=config)
-
-    # Return a StreamingResponse using our generator
-    return StreamingResponse(stream_genarator(graph_stream), media_type="text/plain")
+    return StreamingResponse(stream_generator(graph_stream), media_type="text/plain")

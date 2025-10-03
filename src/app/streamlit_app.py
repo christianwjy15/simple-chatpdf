@@ -1,96 +1,108 @@
+# app.py
+
 import streamlit as st
 import requests
 import uuid
 import os
-from src.rag.indexing import process_pdf
+import time
 
 # --- CONFIGURATION ---
-FASTAPI_URL = "http://127.0.0.1:8000/chat"
-PDF_DATA_DIR = "data"
+st.set_page_config(
+    page_title="Chat with your PDF 📄",
+    page_icon="🤖",
+    layout="wide"
+)
 
+# Constants
+CHAT_API_URL = "http://127.0.0.1:8000/chat"
+PROCESS_PDF_API_URL = "http://127.0.0.1:8000/process-pdf"
 
 # --- HELPER FUNCTIONS ---
-def setup_directories():
-    """Ensure the data directory for PDFs exists."""
-    if not os.path.exists(PDF_DATA_DIR):
-        os.makedirs(PDF_DATA_DIR)
 
 
-# --- STREAMLIT UI ---
-st.set_page_config(page_title="RAG with Memory", layout="wide")
-st.title("RAG Application with Memory")
+def get_session_id():
+    """Get or create a unique session ID for conversation memory."""
+    if "thread_id" not in st.session_state:
+        st.session_state.thread_id = str(uuid.uuid4())
+    return st.session_state.thread_id
 
 
-# --- SIDEBAR FOR PDF PROCESSING ---
-with st.sidebar:
-    st.header("Upload & Process PDF")
-    uploaded_file = st.file_uploader(
-        "Upload a PDF file to chat with", type="pdf"
-    )
-
-    if st.button("Process PDF"):
-        setup_directories()
-        file_path = os.path.join(PDF_DATA_DIR, uploaded_file.name)
-
-        # Save the uploaded file to the data directory
-        with open(file_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-
-        with st.spinner(f"Procesing {uploaded_file.name}..."):
-            try:
-                process_pdf(file_path)
-                st.success(
-                    f"✅ Successfully processed and indexed '{uploaded_file.name}'!")
-            except Exception as e:
-                st.error(f"An error occured: {e}")
-
-    else:
-        st.warning("Please upload a PDF file first.")
-
-# --- MAIN CHAT INTERFACE ---
-st.header("Chat with your PDF Document")
-
-# Initialize session state for chat history and thread ID
+# --- INITIALIZATION ---
+thread_id = get_session_id()
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "thread_id" not in st.session_state:
-    st.session_state.thread_id = str(uuid.uuid4())
 
-# Display chat messages from history on app rerun
+# --- SIDEBAR FOR FILE MANAGEMENT ---
+with st.sidebar:
+    st.header("📚 Your Document")
+
+    uploaded_file = st.file_uploader(
+        "Upload a PDF file to begin the conversation.",
+        type="pdf",
+        accept_multiple_files=False
+    )
+
+    if st.button("Process Document"):
+        if uploaded_file is not None:
+            with st.spinner(f"Sending '{uploaded_file.name}' for analysis..."):
+                try:
+                    # --- THE FIX IS ON THIS LINE ---
+                    # The key 'uploaded_file' must match the parameter name in the FastAPI endpoint.
+                    files = {'uploaded_file': (
+                        uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
+
+                    response = requests.post(PROCESS_PDF_API_URL, files=files)
+
+                    response.raise_for_status()
+
+                    st.session_state.processed_pdf_name = uploaded_file.name
+                    st.success(f"✅ Ready to chat with '{uploaded_file.name}'!")
+                    st.session_state.messages = []
+
+                except requests.exceptions.RequestException as e:
+                    st.error(f"Failed to process document: {e}")
+        else:
+            st.warning("⚠️ Please upload a PDF file first.")
+
+    if "processed_pdf_name" in st.session_state:
+        st.info(
+            f"**Current Document:** `{st.session_state.processed_pdf_name}`")
+
+# --- MAIN CHAT INTERFACE (Unchanged) ---
+st.title("🤖 Chat With Your PDF")
+st.markdown(
+    "Once you've processed a document in the sidebar, you can ask questions about it here.")
+
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Accept user input
-if prompt := st.chat_input("Ask a question about your document"):
-    # Add user message to chat history and display it
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+if prompt := st.chat_input("Ask a question about your document..."):
+    if "processed_pdf_name" not in st.session_state:
+        st.warning(
+            "Please upload and process a PDF document before starting a conversation.")
+    else:
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
-    # Display assistant response in a streaming fashion
-    with st.chat_message("assistant"):
-        message_placeholder = st.empty()
-        full_response = ""
+        with st.chat_message("assistant"):
+            try:
+                payload = {"message": prompt, "thread_id": thread_id}
 
-        try:
-            # Prepare the request payload
-            payload = {"message": prompt,
-                       "thread_id": st.session_state.thread_id}
+                def stream_response():
+                    with requests.post(CHAT_API_URL, json=payload, stream=True) as r:
+                        r.raise_for_status()
+                        for chunk in r.iter_content(chunk_size=None, decode_unicode=True):
+                            yield chunk
+                            time.sleep(0.01)
 
-            # Send request to the FastAPI backend and stream the response
-            with requests.post(FASTAPI_URL, json=payload, stream=True) as r:
-                r.raise_for_status()  # Raise an exception for bad status codes
-                for chunk in r.iter_content(chunk_size=None, decode_unicode=True):
-                    full_response += chunk
-                    message_placeholder.markdown(full_response + "▌")
+                full_response = st.write_stream(stream_response)
 
-            message_placeholder.markdown(full_response)
+            except requests.exceptions.RequestException as e:
+                error_message = f"**Connection Error:** Could not connect to the backend. (Details: {e})"
+                st.error(error_message)
+                full_response = error_message
 
-        except requests.exceptions.RequestException as e:
-            full_response = f"Could not connect to the backend: {e}"
-            message_placeholder.error(full_response)
-
-    # Add assistant response to chat history
-    st.session_state.messages.append(
-        {"role": "assistant", "content": full_response})
+        st.session_state.messages.append(
+            {"role": "assistant", "content": full_response})
