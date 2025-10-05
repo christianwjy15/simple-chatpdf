@@ -3,7 +3,7 @@ from langchain_core.tools import tool
 from langchain_core.messages import SystemMessage, ToolMessage
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.memory import MemorySaver
-from src.rag.indexing import get_llm, get_embeddings, get_vector_store
+from src.rag.indexing import get_llm, get_vector_store
 
 
 # --- TOOL DEFINITION ---
@@ -14,7 +14,6 @@ def retrieve(query: str) -> str:
     vector_store = get_vector_store()
     retrieved_docs = vector_store.similarity_search(query, k=3)
 
-    # Format the retrieved documents into a single string
     context = "\n\n---\n\n".join(
         [f"Source: {doc.metadata.get('source', 'N/A')}, Page: {doc.metadata.get('page', 'N/A')}\nContent: {doc.page_content}" for doc in retrieved_docs]
     )
@@ -30,39 +29,44 @@ def query_or_response(state: MessagesState):
     return {"messages": [response]}
 
 
-# Set up the ToolNode with our retrieve tool
 tools = ToolNode([retrieve])
 
 
 def generate(state: MessagesState):
-    """Generate a final response using the LLM and retrieved context."""
-    # The tool output is always the last message
+    """
+    Generate a final response using the LLM.
+    - If the last message is a ToolMessage, it uses the context to answer.
+    - If the last message is an AIMessage, it means the answer is already there,
+      so it passes it through.
+    """
     last_message = state["messages"][-1]
 
-    # Ensure the last message is a ToolMessage before proceeding
-    if not isinstance(last_message, ToolMessage):
-        return {"messages": [SystemMessage(content="Error: Expected tool output.")]}
+    # Case 1: The state contains tool output. We need to generate a response.
+    if isinstance(last_message, ToolMessage):
+        print("Generating response from tool output...")
+        retrieved_context = last_message.content
 
-    # The content of the ToolMessage is the context from our retrieve tool
-    retrieved_context = last_message.content
+        system_prompt = (
+            "You are an expert assistant for question-answering tasks. "
+            "Use the following retrieved context to answer the user's question. "
+            "If you don't know the answer from the context, just say that you don't know. "
+            "Keep your answer concise and to the point (max 3 sentences)."
+            "\n\n## Context:\n"
+            f"{retrieved_context}"
+        )
 
-    system_prompt = (
-        "You are an assistant for question answering task. "
-        "Use the following pieces of retrieved context to answer "
-        "the question. If you don't know the answer, say that you "
-        "don't know. Use three sentences maximum and keep the "
-        "answer concise."
-        "\n\n## Context:\n"
-        f"{retrieved_context}"
-    )
+        prompt_messages = [SystemMessage(
+            content=system_prompt)] + state["messages"]
 
-    # Prepend the system prompt to the conversation history
-    prompt_messages = [SystemMessage(
-        content=system_prompt)] + state["messages"]
+        llm = get_llm()
+        response = llm.invoke(prompt_messages)
+        return {"messages": [response]}
 
-    llm = get_llm()
-    response = llm.invoke(prompt_messages)
-    return {"messages": [response]}
+    # Case 2: The state already has the final AIMessage. Just return it.
+    # This happens when no tool was called.
+    else:
+        print("Passing through direct response...")
+        return {"messages": [last_message]}
 
 
 # --- GRAPH BUILDER ---
@@ -76,11 +80,15 @@ def build_graph():
 
     graph_builder.set_entry_point("query_or_response")
 
-    # If the LLM calls a tool, go to the 'tools' node. Otherwise, end.
+    # If tools are called, go to "tools".
+    # Otherwise (if the condition is END), go to "generate".
     graph_builder.add_conditional_edges(
         "query_or_response",
         tools_condition,
-        {END: END, "tools": "tools"}
+        {
+            "tools": "tools",
+            END: "generate"
+        }
     )
 
     graph_builder.add_edge("tools", "generate")
@@ -91,24 +99,20 @@ def build_graph():
     return graph
 
 
+# --- INTERACTIVE CHAT (for testing) ---
 if __name__ == "__main__":
     graph = build_graph()
-    config = {"configurable": {"thread_id": "aaa111"}}
+    thread_id = "user_session_123"
+    config = {"configurable": {"thread_id": thread_id}}
 
-    # --- INTERACTIVE CHAT ---
     print("RAG Agent is ready. Type 'exit' to end the chat.")
     while True:
         user_input = input("You: ")
-        if user_input.lower() == "exit":
+        if user_input.lower() == 'exit':
             break
 
-        # Stream the response
         print("Assistant: ", end="", flush=True)
-        for chunk in graph.stream({"messages":
-                                   [("user", user_input)]},
-                                  config=config,
-                                  stream_mode="values"):
-            # The last message is the new one
+        for chunk in graph.stream({"messages": [("user", user_input)]}, config=config, stream_mode="values"):
             last_message = chunk["messages"][-1]
             if last_message.content:
                 print(last_message.content, end="", flush=True)
