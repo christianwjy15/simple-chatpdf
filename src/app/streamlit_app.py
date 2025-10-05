@@ -1,5 +1,3 @@
-# app.py
-
 import streamlit as st
 import requests
 import uuid
@@ -8,8 +6,7 @@ import time
 
 # --- CONFIGURATION ---
 st.set_page_config(
-    page_title="Chat with your PDF 📄",
-    page_icon="🤖",
+    page_title="Chat with your PDF",
     layout="wide"
 )
 
@@ -17,9 +14,8 @@ st.set_page_config(
 CHAT_API_URL = "http://127.0.0.1:8000/chat"
 PROCESS_PDF_API_URL = "http://127.0.0.1:8000/process-pdf"
 
+
 # --- HELPER FUNCTIONS ---
-
-
 def get_session_id():
     """Get or create a unique session ID for conversation memory."""
     if "thread_id" not in st.session_state:
@@ -32,9 +28,10 @@ thread_id = get_session_id()
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+
 # --- SIDEBAR FOR FILE MANAGEMENT ---
 with st.sidebar:
-    st.header("📚 Your Document")
+    st.header("Your Document")
 
     uploaded_file = st.file_uploader(
         "Upload a PDF file to begin the conversation.",
@@ -46,8 +43,6 @@ with st.sidebar:
         if uploaded_file is not None:
             with st.spinner(f"Sending '{uploaded_file.name}' for analysis..."):
                 try:
-                    # --- THE FIX IS ON THIS LINE ---
-                    # The key 'uploaded_file' must match the parameter name in the FastAPI endpoint.
                     files = {'uploaded_file': (
                         uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
 
@@ -56,20 +51,20 @@ with st.sidebar:
                     response.raise_for_status()
 
                     st.session_state.processed_pdf_name = uploaded_file.name
-                    st.success(f"✅ Ready to chat with '{uploaded_file.name}'!")
+                    st.success(f"Ready to chat with '{uploaded_file.name}'!")
                     st.session_state.messages = []
 
                 except requests.exceptions.RequestException as e:
                     st.error(f"Failed to process document: {e}")
         else:
-            st.warning("⚠️ Please upload a PDF file first.")
+            st.warning("Please upload a PDF file first.")
 
     if "processed_pdf_name" in st.session_state:
         st.info(
             f"**Current Document:** `{st.session_state.processed_pdf_name}`")
 
 # --- MAIN CHAT INTERFACE (Unchanged) ---
-st.title("🤖 Chat With Your PDF")
+st.title("Chat With Your PDF")
 st.markdown(
     "Once you've processed a document in the sidebar, you can ask questions about it here.")
 

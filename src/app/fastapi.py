@@ -16,8 +16,6 @@ PDF_DATA_DIR = "data"
 
 
 @app.post("/process-pdf")
-# --- CHANGE IS HERE ---
-# Renamed 'file' to 'uploaded_file' to avoid name collisions.
 async def process_pdf_endpoint(uploaded_file: UploadFile = File(...)):
     """
     Endpoint to upload and process a PDF file.
@@ -25,33 +23,31 @@ async def process_pdf_endpoint(uploaded_file: UploadFile = File(...)):
     if not os.path.exists(PDF_DATA_DIR):
         os.makedirs(PDF_DATA_DIR)
 
-    # --- CHANGE IS HERE ---
     file_path = os.path.join(PDF_DATA_DIR, uploaded_file.filename)
 
     try:
         # Save the uploaded file temporarily
         with open(file_path, "wb") as buffer:
-            # --- CHANGE IS HERE ---
             shutil.copyfileobj(uploaded_file.file, buffer)
 
         process_pdf(file_path)
 
         return {
             "status": "success",
-            # --- CHANGE IS HERE ---
             "filename": uploaded_file.filename,
             "message": "File processed and indexed successfully."
         }
+
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"An error occurred: {str(e)}")
+
     finally:
         if os.path.exists(file_path):
             os.remove(file_path)
 
-# --- Chat Endpoint (No changes needed here) ---
 
-
+# --- Chat Endpoint ---
 class ChatRequest(BaseModel):
     message: str
     thread_id: str

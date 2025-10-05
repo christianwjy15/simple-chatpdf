@@ -43,7 +43,7 @@ def generate(state: MessagesState):
     if not isinstance(last_message, ToolMessage):
         return {"messages": [SystemMessage(content="Error: Expected tool output.")]}
 
-    # The content of the ToolMessage is the context from our `retrieve` tool
+    # The content of the ToolMessage is the context from our retrieve tool
     retrieved_context = last_message.content
 
     system_prompt = (
